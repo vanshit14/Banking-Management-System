@@ -18,7 +18,10 @@ typedef struct {
 } LoanRecord;
 
 int init_loans(void);
+const char *loan_status_name(LoanStatus status);
 int apply_loan(int user_id, long long amount, int *loan_id);
 int assign_loan(int loan_id, int employee_id);
+int list_assigned_loans(int employee_id, LoanRecord *loans,
+                        int max_loans, int *count);
 
 #endif

@@ -18,6 +18,15 @@ static int valid_loan(const LoanRecord *loan) {
            loan->assigned_employee_id >= 0;
 }
 
+const char *loan_status_name(LoanStatus status) {
+    switch (status) {
+        case LOAN_PENDING:  return "PENDING";
+        case LOAN_APPROVED: return "APPROVED";
+        case LOAN_REJECTED: return "REJECTED";
+        default:            return "UNKNOWN";
+    }
+}
+
 static LoanStatus parse_status(const char *text) {
     if (strcmp(text, "PENDING") == 0) return LOAN_PENDING;
     if (strcmp(text, "APPROVED") == 0) return LOAN_APPROVED;
@@ -195,6 +204,46 @@ int assign_loan(int loan_id, int employee_id) {
             }
             if (unlock_region(fd, target, sizeof(LoanRecord)) < 0 && result == 1)
                 result = -1;
+        }
+    }
+    close(fd);
+    return result;
+}
+
+int list_assigned_loans(int employee_id, LoanRecord *loans,
+                        int max_loans, int *count) {
+    if (employee_id <= 0 || !loans || max_loans <= 0 || !count)
+        return -1;
+    *count = 0;
+    int fd = open(LOANS_FILE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+
+    int result = 1;
+    for (off_t offset = 0;; offset += (off_t)sizeof(LoanRecord)) {
+        if (lock_region(fd, F_RDLCK, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        LoanRecord loan;
+        int rc = pread_all(fd, &loan, sizeof(loan), offset);
+        if (unlock_region(fd, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        if (rc == 0)
+            break;
+        if (rc < 0 || !valid_loan(&loan)) {
+            result = -1;
+            break;
+        }
+        if (loan.assigned_employee_id == employee_id) {
+            if (*count >= max_loans) {
+                result = -1;
+                break;
+            }
+            loans[*count] = loan;
+            (*count)++;
         }
     }
     close(fd);

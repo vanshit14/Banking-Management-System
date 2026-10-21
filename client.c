@@ -137,7 +137,8 @@ static int send_request(int fd, const char *command,
     return 0;
 }
 
-static int send_history_request(int fd, const char *command) {
+static int send_list_request(int fd, const char *command,
+                             const char *header_prefix) {
     if (send_all(fd, command, strlen(command)) < 0 ||
         send_all(fd, "\n", 1) < 0) {
         perror("send");
@@ -151,12 +152,13 @@ static int send_history_request(int fd, const char *command) {
     }
 
     printf("\n%s\n", response);
-    if (strncmp(response, "OK|HISTORY|", 11) != 0)
+    size_t prefix_length = strlen(header_prefix);
+    if (strncmp(response, header_prefix, prefix_length) != 0)
         return 0;
 
     char *end = NULL;
-    long count = strtol(response + 11, &end, 10);
-    if (end == response + 11 || *end != '\0' || count < 0)
+    long count = strtol(response + prefix_length, &end, 10);
+    if (end == response + prefix_length || *end != '\0' || count < 0)
         return -1;
 
     for (long i = 0; i < count; i++) {
@@ -285,8 +287,9 @@ int main(void) {
             printf("1. Add New Customer\n");
             printf("2. Modify Customer Username\n");
             printf("3. View Customer Transactions\n");
-            printf("4. Logout\n");
-            printf("5. Exit\n");
+            printf("4. View Assigned Loans\n");
+            printf("5. Logout\n");
+            printf("6. Exit\n");
 
             int rc = read_input("Enter choice: ", input, sizeof(input));
             if (rc == 0)
@@ -374,13 +377,18 @@ int main(void) {
                     printf("Invalid customer id.\n");
                     continue;
                 }
-                if (send_history_request(sock_fd, command) < 0)
+                if (send_list_request(sock_fd, command, "OK|HISTORY|") < 0)
                     running = 0;
                 memset(command, 0, sizeof(command));
                 continue;
             } else if (strcmp(input, "4") == 0) {
-                strcpy(command, "LOGOUT");
+                if (send_list_request(sock_fd, "ASSIGNED_LOANS",
+                                      "OK|LOANS|") < 0)
+                    running = 0;
+                continue;
             } else if (strcmp(input, "5") == 0) {
+                strcpy(command, "LOGOUT");
+            } else if (strcmp(input, "6") == 0) {
                 strcpy(command, "EXIT");
             } else {
                 printf("Invalid choice. Try again.\n");
@@ -578,7 +586,7 @@ int main(void) {
                     continue;
                 }
             } else if (strcmp(input, "5") == 0) {
-                if (send_history_request(sock_fd, "HISTORY") < 0) {
+                if (send_list_request(sock_fd, "HISTORY", "OK|HISTORY|") < 0) {
                     running = 0;
                     break;
                 }

@@ -364,6 +364,33 @@ static void *handle_client(void *arg) {
                 reply(session->socket_fd, "ERR|LOAN_NOT_ASSIGNABLE");
             else
                 reply(session->socket_fd, "ERR|LOAN_ASSIGNMENT_FAILED");
+        } else if (strcmp(command, "ASSIGNED_LOANS") == 0) {
+            if (!require_employee(session))
+                continue;
+            if (strtok_r(NULL, "|", &save) != NULL) {
+                reply(session->socket_fd, "ERR|INVALID_REQUEST");
+                continue;
+            }
+
+            LoanRecord loans[MAX_LOAN_ROWS];
+            int count = 0;
+            if (list_assigned_loans(session->user_id, loans,
+                                    MAX_LOAN_ROWS, &count) != 1) {
+                reply(session->socket_fd, "ERR|LOAN_LIST_FAILED");
+                continue;
+            }
+            char response[BUFFER_SIZE];
+            snprintf(response, sizeof(response), "OK|LOANS|%d", count);
+            reply(session->socket_fd, response);
+            for (int i = 0; i < count; i++) {
+                snprintf(response, sizeof(response),
+                         "ROW|%d|%d|%lld|%s",
+                         loans[i].loan_id, loans[i].customer_id,
+                         (long long)loans[i].amount,
+                         loan_status_name((LoanStatus)loans[i].status));
+                reply(session->socket_fd, response);
+            }
+            reply(session->socket_fd, "END");
         } else if (strcmp(command, "SET_ACCOUNT_STATUS") == 0) {
             if (!require_manager(session))
                 continue;
