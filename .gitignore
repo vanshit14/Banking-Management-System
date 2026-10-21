@@ -1,0 +1,12 @@
+# Compiled programs and object files
+/client
+/server
+*.o
+
+# Runtime customer records and transaction data
+/data/
+
+# Local secrets
+.env
+.env.*
+!.env.example
