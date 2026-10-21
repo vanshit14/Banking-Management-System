@@ -404,8 +404,9 @@ int main(void) {
             printf("\n--------- MANAGER MENU ---------\n");
             printf("1. Activate Customer Account\n");
             printf("2. Deactivate Customer Account\n");
-            printf("3. Logout\n");
-            printf("4. Exit\n");
+            printf("3. Assign Loan to Employee\n");
+            printf("4. Logout\n");
+            printf("5. Exit\n");
 
             int rc = read_input("Enter choice: ", input, sizeof(input));
             if (rc == 0)
@@ -433,8 +434,31 @@ int main(void) {
                     continue;
                 }
             } else if (strcmp(input, "3") == 0) {
-                strcpy(command, "LOGOUT");
+                char loan_id[32], employee_id[32];
+                rc = read_input("Loan id: ", loan_id, sizeof(loan_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                rc = read_input("Employee user id: ", employee_id,
+                                sizeof(employee_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                if (strchr(loan_id, '|') || strchr(employee_id, '|')) {
+                    printf("Invalid loan assignment.\n");
+                    continue;
+                }
+                int n = snprintf(command, sizeof(command),
+                                 "ASSIGN_LOAN|%s|%s", loan_id, employee_id);
+                if (n < 0 || (size_t)n >= sizeof(command)) {
+                    printf("Invalid loan assignment.\n");
+                    continue;
+                }
             } else if (strcmp(input, "4") == 0) {
+                strcpy(command, "LOGOUT");
+            } else if (strcmp(input, "5") == 0) {
                 strcpy(command, "EXIT");
             } else {
                 printf("Invalid choice. Try again.\n");

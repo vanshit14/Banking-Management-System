@@ -19,8 +19,10 @@
 #define TRANSACTIONS_FILE "data/transactions.txt"
 #define TRANSACTIONS_LOCK_FILE "data/transactions.lock"
 
-#define LOANS_FILE "data/loans.txt"
-#define LOANS_LOCK_FILE "data/loans.lock"
+#define LOANS_FILE "data/loans.dat"
+#define LEGACY_LOANS_FILE "data/loans.txt"
+#define LOANS_TEMP_FILE "data/loans.dat.tmp"
+#define LOANS_STRUCTURE_LOCK_FILE "data/loans-structure.lock"
 
 #define FEEDBACK_FILE "data/feedback.txt"
 #define FEEDBACK_LOCK_FILE "data/feedback.lock"

@@ -319,6 +319,51 @@ static void *handle_client(void *arg) {
                 reply(session->socket_fd, "ERR|CUSTOMER_ACCOUNT_NOT_FOUND");
             else
                 send_transaction_history(session->socket_fd, account_id);
+        } else if (strcmp(command, "ASSIGN_LOAN") == 0) {
+            if (!require_manager(session))
+                continue;
+
+            char *loan_text = strtok_r(NULL, "|", &save);
+            char *employee_text = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            char *loan_end = NULL, *employee_end = NULL;
+            errno = 0;
+            long loan_id = loan_text ? strtol(loan_text, &loan_end, 10) : 0;
+            long employee_id = employee_text ?
+                               strtol(employee_text, &employee_end, 10) : 0;
+            if (!loan_text || !employee_text || extra || errno ||
+                loan_end == loan_text || *loan_end != '\0' ||
+                employee_end == employee_text || *employee_end != '\0' ||
+                loan_id <= 0 || loan_id > 2147483647L ||
+                employee_id <= 0 || employee_id > 2147483647L) {
+                reply(session->socket_fd, "ERR|INVALID_LOAN_ASSIGNMENT");
+                continue;
+            }
+
+            Role employee_role;
+            int employee_active;
+            int employee_found = get_user_role((int)employee_id,
+                                               &employee_role,
+                                               &employee_active);
+            if (employee_found < 0) {
+                reply(session->socket_fd, "ERR|USER_STORAGE_ERROR");
+                continue;
+            }
+            if (employee_found == 0 || employee_role != ROLE_EMPLOYEE ||
+                !employee_active) {
+                reply(session->socket_fd, "ERR|EMPLOYEE_NOT_FOUND");
+                continue;
+            }
+
+            int result = assign_loan((int)loan_id, (int)employee_id);
+            if (result == 1)
+                reply(session->socket_fd, "OK|LOAN_ASSIGNED");
+            else if (result == 0)
+                reply(session->socket_fd, "ERR|LOAN_NOT_FOUND");
+            else if (result == -2)
+                reply(session->socket_fd, "ERR|LOAN_NOT_ASSIGNABLE");
+            else
+                reply(session->socket_fd, "ERR|LOAN_ASSIGNMENT_FAILED");
         } else if (strcmp(command, "SET_ACCOUNT_STATUS") == 0) {
             if (!require_manager(session))
                 continue;
@@ -572,6 +617,10 @@ int main(void) {
     init_auth();
     if (init_accounts() < 0) {
         perror("account storage initialization");
+        return EXIT_FAILURE;
+    }
+    if (init_loans() < 0) {
+        perror("loan storage initialization");
         return EXIT_FAILURE;
     }
 

@@ -174,6 +174,42 @@ int authenticate_user(const char *username, const char *password,
     return result;
 }
 
+int get_user_role(int user_id, Role *role, int *active) {
+    if (user_id <= 0 || !role || !active)
+        return -1;
+    int fd = open(USERS_FILE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+
+    int result = 0;
+    for (off_t offset = 0;; offset += (off_t)sizeof(UserRecord)) {
+        if (lock_region(fd, F_RDLCK, offset, sizeof(UserRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        UserRecord user;
+        int rc = pread_all(fd, &user, sizeof(user), offset);
+        if (unlock_region(fd, offset, sizeof(UserRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        if (rc == 0)
+            break;
+        if (rc < 0 || !valid_user(&user)) {
+            result = -1;
+            break;
+        }
+        if (user.user_id == user_id) {
+            *role = (Role)user.role;
+            *active = user.active;
+            result = 1;
+            break;
+        }
+    }
+    close(fd);
+    return result;
+}
+
 int change_password(int user_id, const char *old_password,
                     const char *new_password) {
     if (user_id <= 0 || !old_password || !new_password ||

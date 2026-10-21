@@ -24,6 +24,8 @@ int authenticate_user(const char *username,
                       int *user_id,
                       Role *role);
 
+int get_user_role(int user_id, Role *role, int *active);
+
 int change_password(int user_id,
                     const char *old_password,
                     const char *new_password);
