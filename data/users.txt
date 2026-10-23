@@ -1,0 +1,6 @@
+101|vanshit|pass123|CUSTOMER|1
+106|varun|pass456|CUSTOMER|1
+102|rahul|emp123|EMPLOYEE|1
+103|amit|mgr123|MANAGER|1
+104|admin|admin123|ADMIN|1
+105|hi|1|CUSTOMER|1

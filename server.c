@@ -6,6 +6,7 @@
 #include "feedback.h"
 #include "loans.h"
 #include "transactions.h"
+#include "user_management.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -124,6 +125,18 @@ static int require_manager(ClientSession *session) {
     return 1;
 }
 
+static int require_admin(ClientSession *session) {
+    if (!session->authenticated) {
+        reply(session->socket_fd, "ERR|LOGIN_REQUIRED");
+        return 0;
+    }
+    if (session->role != ROLE_ADMIN) {
+        reply(session->socket_fd, "ERR|ADMIN_ONLY");
+        return 0;
+    }
+    return 1;
+}
+
 static int parse_positive_amount(const char *text, long long *amount) {
     return parse_money_amount(text, amount);
 }
@@ -160,6 +173,20 @@ static void send_transaction_history(int fd, int account_id) {
         char row[BUFFER_SIZE + 8];
         snprintf(row, sizeof(row), "ROW|%s", rows[i]);
         reply(fd, row);
+    }
+    reply(fd, "END");
+}
+
+static void send_loan_rows(int fd, const LoanRecord *loans, int count) {
+    char response[BUFFER_SIZE];
+    snprintf(response, sizeof(response), "OK|LOANS|%d", count);
+    reply(fd, response);
+    for (int i = 0; i < count; i++) {
+        snprintf(response, sizeof(response), "ROW|%d|%d|%lld|%s",
+                 loans[i].loan_id, loans[i].customer_id,
+                 (long long)loans[i].amount,
+                 loan_status_name((LoanStatus)loans[i].status));
+        reply(fd, response);
     }
     reply(fd, "END");
 }
@@ -236,6 +263,86 @@ static void *handle_client(void *arg) {
             snprintf(response, sizeof(response),
                      "OK|LOGIN|%d|%s", user_id, role_name(role));
             reply(session->socket_fd, response);
+        } else if (strcmp(command, "ADD_EMPLOYEE") == 0) {
+            if (!require_admin(session))
+                continue;
+
+            char *username = strtok_r(NULL, "|", &save);
+            char *password = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            if (!username || !password || extra || username[0] == '\0' ||
+                password[0] == '\0' || strlen(username) >= 128 ||
+                strlen(password) >= 128) {
+                reply(session->socket_fd, "ERR|INVALID_EMPLOYEE_DATA");
+                continue;
+            }
+
+            int employee_id = 0;
+            int result = add_employee(username, password, &employee_id);
+            if (result == -2) {
+                reply(session->socket_fd, "ERR|USERNAME_EXISTS");
+            } else if (result != 1) {
+                reply(session->socket_fd, "ERR|EMPLOYEE_CREATE_FAILED");
+            } else {
+                char response[BUFFER_SIZE];
+                snprintf(response, sizeof(response),
+                         "OK|EMPLOYEE_ADDED|%d", employee_id);
+                reply(session->socket_fd, response);
+            }
+        } else if (strcmp(command, "ADMIN_MODIFY_USER") == 0) {
+            if (!require_admin(session))
+                continue;
+
+            char *id_text = strtok_r(NULL, "|", &save);
+            char *new_username = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            char *end = NULL;
+            errno = 0;
+            long user_id = id_text ? strtol(id_text, &end, 10) : 0;
+            if (!id_text || !new_username || extra || errno ||
+                end == id_text || *end != '\0' || user_id <= 0 ||
+                user_id > 2147483647L || new_username[0] == '\0' ||
+                strlen(new_username) >= 128) {
+                reply(session->socket_fd, "ERR|INVALID_USER_DATA");
+                continue;
+            }
+
+            int result = admin_modify_username((int)user_id, new_username);
+            if (result == 1)
+                reply(session->socket_fd, "OK|USER_MODIFIED");
+            else if (result == 0)
+                reply(session->socket_fd, "ERR|MANAGED_USER_NOT_FOUND");
+            else if (result == -2)
+                reply(session->socket_fd, "ERR|USERNAME_EXISTS");
+            else
+                reply(session->socket_fd, "ERR|USER_MODIFY_FAILED");
+        } else if (strcmp(command, "SET_STAFF_ROLE") == 0) {
+            if (!require_admin(session))
+                continue;
+
+            char *id_text = strtok_r(NULL, "|", &save);
+            char *role_text = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            char *end = NULL;
+            errno = 0;
+            long user_id = id_text ? strtol(id_text, &end, 10) : 0;
+            Role new_role = role_text ? parse_role(role_text) : ROLE_NONE;
+            if (!id_text || !role_text || extra || errno || end == id_text ||
+                *end != '\0' || user_id <= 0 || user_id > 2147483647L ||
+                (new_role != ROLE_EMPLOYEE && new_role != ROLE_MANAGER)) {
+                reply(session->socket_fd, "ERR|INVALID_ROLE_CHANGE");
+                continue;
+            }
+
+            int result = set_staff_role((int)user_id, new_role);
+            if (result == 1)
+                reply(session->socket_fd, "OK|STAFF_ROLE_UPDATED");
+            else if (result == 0)
+                reply(session->socket_fd, "ERR|USER_NOT_FOUND");
+            else if (result == -2)
+                reply(session->socket_fd, "ERR|STAFF_ROLE_ONLY");
+            else
+                reply(session->socket_fd, "ERR|ROLE_UPDATE_FAILED");
         } else if (strcmp(command, "ADD_CUSTOMER") == 0) {
             if (!require_employee(session))
                 continue;
@@ -364,6 +471,64 @@ static void *handle_client(void *arg) {
                 reply(session->socket_fd, "ERR|LOAN_NOT_ASSIGNABLE");
             else
                 reply(session->socket_fd, "ERR|LOAN_ASSIGNMENT_FAILED");
+        } else if (strcmp(command, "START_LOAN_PROCESSING") == 0) {
+            if (!require_employee(session))
+                continue;
+
+            char *id_text = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            char *end = NULL;
+            errno = 0;
+            long loan_id = id_text ? strtol(id_text, &end, 10) : 0;
+            if (!id_text || extra || errno || end == id_text || *end != '\0' ||
+                loan_id <= 0 || loan_id > 2147483647L) {
+                reply(session->socket_fd, "ERR|INVALID_LOAN_ID");
+                continue;
+            }
+
+            int result = start_loan_processing((int)loan_id,
+                                               session->user_id);
+            if (result == 1)
+                reply(session->socket_fd, "OK|LOAN_IN_REVIEW");
+            else if (result == 0)
+                reply(session->socket_fd, "ERR|LOAN_NOT_FOUND");
+            else if (result == -2)
+                reply(session->socket_fd, "ERR|LOAN_NOT_ASSIGNED_TO_YOU");
+            else if (result == -3)
+                reply(session->socket_fd, "ERR|LOAN_NOT_PENDING");
+            else
+                reply(session->socket_fd, "ERR|LOAN_PROCESS_FAILED");
+        } else if (strcmp(command, "PROCESS_LOAN") == 0) {
+            if (!require_employee(session))
+                continue;
+
+            char *id_text = strtok_r(NULL, "|", &save);
+            char *decision = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            char *end = NULL;
+            errno = 0;
+            long loan_id = id_text ? strtol(id_text, &end, 10) : 0;
+            if (!id_text || !decision || extra || errno || end == id_text ||
+                *end != '\0' || loan_id <= 0 || loan_id > 2147483647L ||
+                (strcmp(decision, "APPROVE") != 0 &&
+                 strcmp(decision, "REJECT") != 0)) {
+                reply(session->socket_fd, "ERR|INVALID_LOAN_DECISION");
+                continue;
+            }
+
+            int approve = strcmp(decision, "APPROVE") == 0;
+            int result = process_loan((int)loan_id, session->user_id, approve);
+            if (result == 1)
+                reply(session->socket_fd,
+                      approve ? "OK|LOAN_APPROVED" : "OK|LOAN_REJECTED");
+            else if (result == 0)
+                reply(session->socket_fd, "ERR|LOAN_NOT_FOUND");
+            else if (result == -2)
+                reply(session->socket_fd, "ERR|LOAN_NOT_ASSIGNED_TO_YOU");
+            else if (result == -3)
+                reply(session->socket_fd, "ERR|LOAN_NOT_IN_REVIEW");
+            else
+                reply(session->socket_fd, "ERR|LOAN_PROCESS_FAILED");
         } else if (strcmp(command, "ASSIGNED_LOANS") == 0) {
             if (!require_employee(session))
                 continue;
@@ -379,15 +544,39 @@ static void *handle_client(void *arg) {
                 reply(session->socket_fd, "ERR|LOAN_LIST_FAILED");
                 continue;
             }
-            char response[BUFFER_SIZE];
-            snprintf(response, sizeof(response), "OK|LOANS|%d", count);
+            send_loan_rows(session->socket_fd, loans, count);
+        } else if (strcmp(command, "UNASSIGNED_LOANS") == 0) {
+            if (!require_manager(session))
+                continue;
+            if (strtok_r(NULL, "|", &save) != NULL) {
+                reply(session->socket_fd, "ERR|INVALID_REQUEST");
+                continue;
+            }
+            LoanRecord loans[MAX_LOAN_ROWS];
+            int count = 0;
+            if (list_unassigned_loans(loans, MAX_LOAN_ROWS, &count) != 1)
+                reply(session->socket_fd, "ERR|LOAN_LIST_FAILED");
+            else
+                send_loan_rows(session->socket_fd, loans, count);
+        } else if (strcmp(command, "LIST_FEEDBACK") == 0) {
+            if (!require_manager(session))
+                continue;
+            if (strtok_r(NULL, "|", &save) != NULL) {
+                reply(session->socket_fd, "ERR|INVALID_REQUEST");
+                continue;
+            }
+
+            char rows[MAX_FEEDBACK_ROWS][BUFFER_SIZE];
+            int count = 0;
+            if (list_feedback(rows, MAX_FEEDBACK_ROWS, &count) != 1) {
+                reply(session->socket_fd, "ERR|FEEDBACK_LIST_FAILED");
+                continue;
+            }
+            char response[BUFFER_SIZE + 8];
+            snprintf(response, sizeof(response), "OK|FEEDBACK|%d", count);
             reply(session->socket_fd, response);
             for (int i = 0; i < count; i++) {
-                snprintf(response, sizeof(response),
-                         "ROW|%d|%d|%lld|%s",
-                         loans[i].loan_id, loans[i].customer_id,
-                         (long long)loans[i].amount,
-                         loan_status_name((LoanStatus)loans[i].status));
+                snprintf(response, sizeof(response), "ROW|%s", rows[i]);
                 reply(session->socket_fd, response);
             }
             reply(session->socket_fd, "END");

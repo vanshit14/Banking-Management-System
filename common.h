@@ -6,6 +6,7 @@
 #define MAX_ACTIVE_SESSIONS 128
 #define MAX_HISTORY_ROWS 256
 #define MAX_LOAN_ROWS 256
+#define MAX_FEEDBACK_ROWS 256
 
 #define USERS_FILE "data/users.dat"
 #define LEGACY_USERS_FILE "data/users.txt"

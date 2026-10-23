@@ -64,3 +64,51 @@ int add_feedback(int user_id, const char *text, int *feedback_id) {
     ofd_unlock(lock_fd);
     return 1;
 }
+
+int list_feedback(char rows[][BUFFER_SIZE], int max_rows, int *count) {
+    if (!rows || max_rows <= 0 || !count)
+        return -1;
+    *count = 0;
+    int lock_fd = ofd_lock(FEEDBACK_LOCK_FILE, F_RDLCK);
+    if (lock_fd < 0)
+        return -1;
+    int fd = open(FEEDBACK_FILE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        int missing = errno == ENOENT;
+        ofd_unlock(lock_fd);
+        return missing ? 1 : -1;
+    }
+
+    int result = 1, eof = 0;
+    char line[BUFFER_SIZE];
+    while (1) {
+        int rc = read_line_fd(fd, line, sizeof(line), &eof);
+        if (rc == 0)
+            break;
+        if (rc < 0 || *count >= max_rows) {
+            result = -1;
+            break;
+        }
+        int feedback_id, user_id;
+        long timestamp;
+        char text[400];
+        if (sscanf(line, "%d|%d|%ld|%399[^\n]",
+                   &feedback_id, &user_id, &timestamp, text) != 4 ||
+            feedback_id <= 0 || user_id <= 0 || timestamp <= 0 ||
+            text[0] == '\0' || strchr(text, '|') != NULL) {
+            result = -1;
+            break;
+        }
+        int length = snprintf(rows[*count], BUFFER_SIZE, "%s", line);
+        if (length < 0 || (size_t)length >= BUFFER_SIZE) {
+            result = -1;
+            break;
+        }
+        (*count)++;
+        if (eof)
+            break;
+    }
+    close(fd);
+    ofd_unlock(lock_fd);
+    return result;
+}

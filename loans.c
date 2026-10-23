@@ -21,6 +21,7 @@ static int valid_loan(const LoanRecord *loan) {
 const char *loan_status_name(LoanStatus status) {
     switch (status) {
         case LOAN_PENDING:  return "PENDING";
+        case LOAN_IN_REVIEW:return "IN_REVIEW";
         case LOAN_APPROVED: return "APPROVED";
         case LOAN_REJECTED: return "REJECTED";
         default:            return "UNKNOWN";
@@ -29,6 +30,7 @@ const char *loan_status_name(LoanStatus status) {
 
 static LoanStatus parse_status(const char *text) {
     if (strcmp(text, "PENDING") == 0) return LOAN_PENDING;
+    if (strcmp(text, "IN_REVIEW") == 0) return LOAN_IN_REVIEW;
     if (strcmp(text, "APPROVED") == 0) return LOAN_APPROVED;
     if (strcmp(text, "REJECTED") == 0) return LOAN_REJECTED;
     return 0;
@@ -244,6 +246,159 @@ int list_assigned_loans(int employee_id, LoanRecord *loans,
             }
             loans[*count] = loan;
             (*count)++;
+        }
+    }
+    close(fd);
+    return result;
+}
+
+int list_unassigned_loans(LoanRecord *loans, int max_loans, int *count) {
+    if (!loans || max_loans <= 0 || !count)
+        return -1;
+    *count = 0;
+    int fd = open(LOANS_FILE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+
+    int result = 1;
+    for (off_t offset = 0;; offset += (off_t)sizeof(LoanRecord)) {
+        if (lock_region(fd, F_RDLCK, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        LoanRecord loan;
+        int rc = pread_all(fd, &loan, sizeof(loan), offset);
+        if (unlock_region(fd, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        if (rc == 0)
+            break;
+        if (rc < 0 || !valid_loan(&loan)) {
+            result = -1;
+            break;
+        }
+        if (loan.status == LOAN_PENDING && loan.assigned_employee_id == 0) {
+            if (*count >= max_loans) {
+                result = -1;
+                break;
+            }
+            loans[*count] = loan;
+            (*count)++;
+        }
+    }
+    close(fd);
+    return result;
+}
+
+int start_loan_processing(int loan_id, int employee_id) {
+    if (loan_id <= 0 || employee_id <= 0)
+        return -1;
+    int fd = open(LOANS_FILE, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+
+    int result = 0;
+    off_t target = -1;
+    for (off_t offset = 0;; offset += (off_t)sizeof(LoanRecord)) {
+        if (lock_region(fd, F_RDLCK, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        LoanRecord loan;
+        int rc = pread_all(fd, &loan, sizeof(loan), offset);
+        if (unlock_region(fd, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        if (rc == 0)
+            break;
+        if (rc < 0 || !valid_loan(&loan)) {
+            result = -1;
+            break;
+        }
+        if (loan.loan_id == loan_id) {
+            target = offset;
+            break;
+        }
+    }
+
+    if (result == 0 && target >= 0) {
+        if (lock_region(fd, F_WRLCK, target, sizeof(LoanRecord)) < 0) {
+            result = -1;
+        } else {
+            LoanRecord loan;
+            if (pread_all(fd, &loan, sizeof(loan), target) != 1 ||
+                !valid_loan(&loan) || loan.loan_id != loan_id) {
+                result = -1;
+            } else if (loan.assigned_employee_id != employee_id) {
+                result = -2;
+            } else if (loan.status != LOAN_PENDING) {
+                result = -3;
+            } else {
+                loan.status = LOAN_IN_REVIEW;
+                result = pwrite_all(fd, &loan, sizeof(loan), target) == 0 &&
+                         fsync(fd) == 0 ? 1 : -1;
+            }
+            if (unlock_region(fd, target, sizeof(LoanRecord)) < 0 && result == 1)
+                result = -1;
+        }
+    }
+    close(fd);
+    return result;
+}
+
+int process_loan(int loan_id, int employee_id, int approve) {
+    if (loan_id <= 0 || employee_id <= 0 || (approve != 0 && approve != 1))
+        return -1;
+    int fd = open(LOANS_FILE, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+
+    int result = 0;
+    off_t target = -1;
+    for (off_t offset = 0;; offset += (off_t)sizeof(LoanRecord)) {
+        if (lock_region(fd, F_RDLCK, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        LoanRecord loan;
+        int rc = pread_all(fd, &loan, sizeof(loan), offset);
+        if (unlock_region(fd, offset, sizeof(LoanRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        if (rc == 0)
+            break;
+        if (rc < 0 || !valid_loan(&loan)) {
+            result = -1;
+            break;
+        }
+        if (loan.loan_id == loan_id) {
+            target = offset;
+            break;
+        }
+    }
+
+    if (result == 0 && target >= 0) {
+        if (lock_region(fd, F_WRLCK, target, sizeof(LoanRecord)) < 0) {
+            result = -1;
+        } else {
+            LoanRecord loan;
+            if (pread_all(fd, &loan, sizeof(loan), target) != 1 ||
+                !valid_loan(&loan) || loan.loan_id != loan_id) {
+                result = -1;
+            } else if (loan.assigned_employee_id != employee_id) {
+                result = -2;
+            } else if (loan.status != LOAN_IN_REVIEW) {
+                result = -3;
+            } else {
+                loan.status = approve ? LOAN_APPROVED : LOAN_REJECTED;
+                result = pwrite_all(fd, &loan, sizeof(loan), target) == 0 &&
+                         fsync(fd) == 0 ? 1 : -1;
+            }
+            if (unlock_region(fd, target, sizeof(LoanRecord)) < 0 && result == 1)
+                result = -1;
         }
     }
     close(fd);

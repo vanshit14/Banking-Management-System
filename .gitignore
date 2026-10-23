@@ -3,8 +3,10 @@
 /server
 *.o
 
-# Runtime customer records and transaction data
-/data/
+# Generated binary records, locks, and temporary files
+data/*.dat
+data/*.lock
+data/*.tmp
 
 # Local secrets
 .env

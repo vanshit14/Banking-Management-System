@@ -4,6 +4,7 @@
 #include "auth.h"
 #include "common.h"
 #include "fileio.h"
+#include "user_management.h"
 
 #include <fcntl.h>
 #include <string.h>
@@ -160,70 +161,5 @@ done:
 }
 
 int modify_customer_username(int customer_id, const char *new_username) {
-    if (customer_id <= 0 || !valid_text_field(new_username))
-        return -1;
-    int structure_lock = ofd_lock(USERS_STRUCTURE_LOCK_FILE, F_WRLCK);
-    if (structure_lock < 0)
-        return -1;
-    int fd = open(USERS_FILE, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        ofd_unlock(structure_lock);
-        return -1;
-    }
-
-    int result = 0;
-    off_t target = -1;
-    for (off_t offset = 0;; offset += (off_t)sizeof(UserRecord)) {
-        if (lock_region(fd, F_RDLCK, offset, sizeof(UserRecord)) < 0) {
-            result = -1;
-            break;
-        }
-        UserRecord user;
-        int rc = pread_all(fd, &user, sizeof(user), offset);
-        if (unlock_region(fd, offset, sizeof(UserRecord)) < 0) {
-            result = -1;
-            break;
-        }
-        if (rc == 0)
-            break;
-        if (rc < 0 || !valid_user(&user)) {
-            result = -1;
-            break;
-        }
-        if (user.user_id != customer_id &&
-            strcmp(user.username, new_username) == 0) {
-            result = -2;
-            break;
-        }
-        if (user.user_id == customer_id) {
-            if (user.role != ROLE_CUSTOMER || target >= 0) {
-                result = user.role == ROLE_CUSTOMER ? -1 : 0;
-                break;
-            }
-            target = offset;
-        }
-    }
-
-    if (result == 0 && target >= 0) {
-        if (lock_region(fd, F_WRLCK, target, sizeof(UserRecord)) < 0) {
-            result = -1;
-        } else {
-            UserRecord user;
-            if (pread_all(fd, &user, sizeof(user), target) != 1 ||
-                !valid_user(&user) || user.user_id != customer_id ||
-                user.role != ROLE_CUSTOMER) {
-                result = -1;
-            } else {
-                memset(user.username, 0, sizeof(user.username));
-                memcpy(user.username, new_username, strlen(new_username) + 1);
-                result = pwrite_all(fd, &user, sizeof(user), target) == 0 &&
-                         fsync(fd) == 0 ? 1 : -1;
-            }
-            if (unlock_region(fd, target, sizeof(UserRecord)) < 0 && result == 1)
-                result = -1;
-        }
-    }
-    close(fd);
-    ofd_unlock(structure_lock);
-    return result;
+    return modify_username_for_role(customer_id, new_username, ROLE_CUSTOMER);
 }

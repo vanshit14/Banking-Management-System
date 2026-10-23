@@ -185,6 +185,35 @@ static int parse_amount(const char *text, long long *amount) {
     return 1;
 }
 
+static int build_password_command(char *command, size_t capacity) {
+    char old_password[128], new_password[128];
+    int rc = read_password("Current password: ", old_password,
+                           sizeof(old_password));
+    if (rc <= 0)
+        return rc;
+    rc = read_password("New password: ", new_password, sizeof(new_password));
+    if (rc <= 0) {
+        memset(old_password, 0, sizeof(old_password));
+        return rc;
+    }
+    if (strchr(old_password, '|') || strchr(new_password, '|') ||
+        old_password[0] == '\0' || new_password[0] == '\0') {
+        printf("Invalid password format.\n");
+        memset(old_password, 0, sizeof(old_password));
+        memset(new_password, 0, sizeof(new_password));
+        return -1;
+    }
+    int length = snprintf(command, capacity, "PASSWD|%s|%s",
+                          old_password, new_password);
+    memset(old_password, 0, sizeof(old_password));
+    memset(new_password, 0, sizeof(new_password));
+    if (length < 0 || (size_t)length >= capacity) {
+        printf("Password is too long.\n");
+        return -1;
+    }
+    return 1;
+}
+
 int main(void) {
     int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
@@ -211,6 +240,7 @@ int main(void) {
     int is_customer = 0;
     int is_employee = 0;
     int is_manager = 0;
+    int is_admin = 0;
     int running = 1;
     char input[BUFFER_SIZE];
     char command[BUFFER_SIZE];
@@ -266,11 +296,13 @@ int main(void) {
                 is_customer = 0;
                 is_employee = 0;
                 is_manager = 0;
+                is_admin = 0;
                 if (logged_in) {
                     char *role = strrchr(response, '|');
                     is_customer = role && strcmp(role + 1, "CUSTOMER") == 0;
                     is_employee = role && strcmp(role + 1, "EMPLOYEE") == 0;
                     is_manager = role && strcmp(role + 1, "MANAGER") == 0;
+                    is_admin = role && strcmp(role + 1, "ADMIN") == 0;
                 }
                 memset(command, 0, sizeof(command));
             } else if (strcmp(input, "2") == 0) {
@@ -288,8 +320,12 @@ int main(void) {
             printf("2. Modify Customer Username\n");
             printf("3. View Customer Transactions\n");
             printf("4. View Assigned Loans\n");
-            printf("5. Logout\n");
-            printf("6. Exit\n");
+            printf("5. Process Assigned Loan\n");
+            printf("6. Approve Loan in Review\n");
+            printf("7. Reject Loan in Review\n");
+            printf("8. Change Password\n");
+            printf("9. Logout\n");
+            printf("10. Exit\n");
 
             int rc = read_input("Enter choice: ", input, sizeof(input));
             if (rc == 0)
@@ -387,8 +423,51 @@ int main(void) {
                     running = 0;
                 continue;
             } else if (strcmp(input, "5") == 0) {
+                char loan_id[32];
+                rc = read_input("Loan id: ", loan_id, sizeof(loan_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                if (strchr(loan_id, '|')) {
+                    printf("Invalid loan id.\n");
+                    continue;
+                }
+                int n = snprintf(command, sizeof(command),
+                                 "START_LOAN_PROCESSING|%s", loan_id);
+                if (n < 0 || (size_t)n >= sizeof(command)) {
+                    printf("Invalid loan id.\n");
+                    continue;
+                }
+            } else if (strcmp(input, "6") == 0 ||
+                       strcmp(input, "7") == 0) {
+                int approve = strcmp(input, "6") == 0;
+                char loan_id[32];
+                rc = read_input("Loan id: ", loan_id, sizeof(loan_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                if (strchr(loan_id, '|')) {
+                    printf("Invalid loan id.\n");
+                    continue;
+                }
+                int n = snprintf(command, sizeof(command),
+                                 "PROCESS_LOAN|%s|%s", loan_id,
+                                 approve ? "APPROVE" : "REJECT");
+                if (n < 0 || (size_t)n >= sizeof(command)) {
+                    printf("Invalid loan id.\n");
+                    continue;
+                }
+            } else if (strcmp(input, "8") == 0) {
+                rc = build_password_command(command, sizeof(command));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+            } else if (strcmp(input, "9") == 0) {
                 strcpy(command, "LOGOUT");
-            } else if (strcmp(input, "6") == 0) {
+            } else if (strcmp(input, "10") == 0) {
                 strcpy(command, "EXIT");
             } else {
                 printf("Invalid choice. Try again.\n");
@@ -412,9 +491,12 @@ int main(void) {
             printf("\n--------- MANAGER MENU ---------\n");
             printf("1. Activate Customer Account\n");
             printf("2. Deactivate Customer Account\n");
-            printf("3. Assign Loan to Employee\n");
-            printf("4. Logout\n");
-            printf("5. Exit\n");
+            printf("3. View Pending Unassigned Loans\n");
+            printf("4. Assign Loan to Employee\n");
+            printf("5. Review Customer Feedback\n");
+            printf("6. Change Password\n");
+            printf("7. Logout\n");
+            printf("8. Exit\n");
 
             int rc = read_input("Enter choice: ", input, sizeof(input));
             if (rc == 0)
@@ -442,6 +524,11 @@ int main(void) {
                     continue;
                 }
             } else if (strcmp(input, "3") == 0) {
+                if (send_list_request(sock_fd, "UNASSIGNED_LOANS",
+                                      "OK|LOANS|") < 0)
+                    running = 0;
+                continue;
+            } else if (strcmp(input, "4") == 0) {
                 char loan_id[32], employee_id[32];
                 rc = read_input("Loan id: ", loan_id, sizeof(loan_id));
                 if (rc <= 0) {
@@ -464,9 +551,20 @@ int main(void) {
                     printf("Invalid loan assignment.\n");
                     continue;
                 }
-            } else if (strcmp(input, "4") == 0) {
-                strcpy(command, "LOGOUT");
             } else if (strcmp(input, "5") == 0) {
+                if (send_list_request(sock_fd, "LIST_FEEDBACK",
+                                      "OK|FEEDBACK|") < 0)
+                    running = 0;
+                continue;
+            } else if (strcmp(input, "6") == 0) {
+                rc = build_password_command(command, sizeof(command));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+            } else if (strcmp(input, "7") == 0) {
+                strcpy(command, "LOGOUT");
+            } else if (strcmp(input, "8") == 0) {
                 strcpy(command, "EXIT");
             } else {
                 printf("Invalid choice. Try again.\n");
@@ -481,6 +579,130 @@ int main(void) {
                 strcmp(response, "OK|LOGOUT") == 0) {
                 logged_in = 0;
                 is_manager = 0;
+            }
+            if (strcmp(command, "EXIT") == 0)
+                running = 0;
+            memset(command, 0, sizeof(command));
+        } else if (is_admin) {
+            printf("\n------- ADMINISTRATOR MENU ------\n");
+            printf("1. Add New Bank Employee\n");
+            printf("2. Modify Customer/Staff Username\n");
+            printf("3. Promote/Demote Staff\n");
+            printf("4. Change Password\n");
+            printf("5. Logout\n");
+            printf("6. Exit\n");
+
+            int rc = read_input("Enter choice: ", input, sizeof(input));
+            if (rc == 0)
+                break;
+            if (rc < 0)
+                continue;
+
+            if (strcmp(input, "1") == 0) {
+                char username[128], password[128];
+                rc = read_input("Employee username: ", username,
+                                sizeof(username));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                rc = read_password("Initial password: ", password,
+                                   sizeof(password));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                if (username[0] == '\0' || password[0] == '\0' ||
+                    strchr(username, '|') || strchr(password, '|')) {
+                    printf("Invalid employee details.\n");
+                    memset(password, 0, sizeof(password));
+                    continue;
+                }
+                int n = snprintf(command, sizeof(command),
+                                 "ADD_EMPLOYEE|%s|%s", username, password);
+                memset(password, 0, sizeof(password));
+                if (n < 0 || (size_t)n >= sizeof(command)) {
+                    printf("Employee details are too long.\n");
+                    continue;
+                }
+            } else if (strcmp(input, "2") == 0) {
+                char user_id[32], new_username[128];
+                rc = read_input("Customer/staff user id: ", user_id,
+                                sizeof(user_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                rc = read_input("New username: ", new_username,
+                                sizeof(new_username));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                if (new_username[0] == '\0' || strchr(new_username, '|') ||
+                    strchr(user_id, '|')) {
+                    printf("Invalid user details.\n");
+                    continue;
+                }
+                int n = snprintf(command, sizeof(command),
+                                 "ADMIN_MODIFY_USER|%s|%s",
+                                 user_id, new_username);
+                if (n < 0 || (size_t)n >= sizeof(command)) {
+                    printf("User details are too long.\n");
+                    continue;
+                }
+            } else if (strcmp(input, "3") == 0) {
+                char user_id[32], role_choice[8];
+                rc = read_input("Staff user id: ", user_id, sizeof(user_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                rc = read_input("New role (1=Employee, 2=Manager): ",
+                                role_choice, sizeof(role_choice));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                const char *role_name_text = NULL;
+                if (strcmp(role_choice, "1") == 0)
+                    role_name_text = "EMPLOYEE";
+                else if (strcmp(role_choice, "2") == 0)
+                    role_name_text = "MANAGER";
+                if (!role_name_text || strchr(user_id, '|')) {
+                    printf("Invalid role change.\n");
+                    continue;
+                }
+                int n = snprintf(command, sizeof(command),
+                                 "SET_STAFF_ROLE|%s|%s",
+                                 user_id, role_name_text);
+                if (n < 0 || (size_t)n >= sizeof(command)) {
+                    printf("Invalid role change.\n");
+                    continue;
+                }
+            } else if (strcmp(input, "4") == 0) {
+                rc = build_password_command(command, sizeof(command));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+            } else if (strcmp(input, "5") == 0) {
+                strcpy(command, "LOGOUT");
+            } else if (strcmp(input, "6") == 0) {
+                strcpy(command, "EXIT");
+            } else {
+                printf("Invalid choice. Try again.\n");
+                continue;
+            }
+
+            if (send_request(sock_fd, command, response, sizeof(response)) < 0) {
+                running = 0;
+                break;
+            }
+            if (strcmp(command, "LOGOUT") == 0 &&
+                strcmp(response, "OK|LOGOUT") == 0) {
+                logged_in = 0;
+                is_admin = 0;
             }
             if (strcmp(command, "EXIT") == 0)
                 running = 0;
@@ -609,31 +831,9 @@ int main(void) {
                     continue;
                 }
             } else if (strcmp(input, "7") == 0) {
-                char old_pass[128];
-                char new_pass[128];
-                rc = read_password("Current password: ", old_pass, sizeof(old_pass));
-                if (rc == 0)
-                    break;
-                if (rc < 0)
-                    continue;
-                rc = read_password("New password: ", new_pass, sizeof(new_pass));
-                if (rc == 0)
-                    break;
-                if (rc < 0)
-                    continue;
-
-                if (strchr(old_pass, '|') || strchr(new_pass, '|') ||
-                    old_pass[0] == '\0' || new_pass[0] == '\0') {
-                    printf("Invalid password format.\n");
-                    continue;
-                }
-
-                int n = snprintf(command, sizeof(command),
-                                 "PASSWD|%s|%s", old_pass, new_pass);
-                memset(old_pass, 0, sizeof(old_pass));
-                memset(new_pass, 0, sizeof(new_pass));
-                if (n < 0 || (size_t)n >= sizeof(command)) {
-                    printf("Input too long.\n");
+                rc = build_password_command(command, sizeof(command));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
                     continue;
                 }
             } else if (strcmp(input, "8") == 0) {
