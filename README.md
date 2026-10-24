@@ -1,32 +1,101 @@
 # Banking Management System
 
-Build on Linux with:
+A Linux client-server banking application written in C. The server maintains
+banking records and handles multiple clients using POSIX threads. File
+operations and synchronization primarily use Linux system calls, binary files,
+and `fcntl` OFD locks.
 
-```sh
-gcc -Wall -Wextra -Wpedantic -pthread server.c auth.c accounts.c \
-    customer_management.c user_management.c fileio.c transactions.c \
-    loans.c feedback.c -o server
+## Features
+
+### Customer
+
+- Secure login with one active session per user
+- View account balance
+- Deposit and withdraw integer amounts
+- Transfer funds
+- Apply for loans
+- View transaction history
+- Submit feedback
+- Change password
+- Logout
+
+### Bank Employee
+
+- Add customers
+- Modify customer details
+- Permanently close customer accounts
+- View customer transaction history
+- View assigned loan applications
+- Start loan processing
+- Approve or reject loans
+- Change password
+
+### Manager
+
+- Activate or deactivate customer accounts
+- Assign loans to employees
+- Review customer feedback
+- Change password
+
+### Administrator
+
+- Add bank employees
+- Modify customer and employee details
+- Change employee and manager roles
+- Change password
+
+## Technical Features
+
+- TCP socket communication
+- Multithreaded server
+- One thread per connected client
+- Binary record storage
+- `fcntl` OFD file and record locking
+- Ordered locking during transfers to prevent deadlocks
+- One active login session per user
+- Role-based authorization
+- Integer-only monetary values
+- Modular C source files
+- `fsync()` for important file updates
+
+## Compilation
+
+Open a terminal inside the project folder:
+
+```bash
+cd ~/banking-review/banking-system
+```
+
+Compile the server:
+
+```bash
+gcc -Wall -Wextra -Wpedantic -pthread \
+server.c auth.c accounts.c customer_management.c user_management.c \
+fileio.c transactions.c loans.c feedback.c -o server
+```
+
+Compile the client:
+
+```bash
 gcc -Wall -Wextra -Wpedantic client.c -o client
 ```
 
-Then start `./server` and `./client` in separate terminals from this directory.
-The server listens on `127.0.0.1:5555`. Existing text records in `data/` are
-migrated automatically on first startup. Password storage remains unchanged.
+## Running the Project
 
-## Concurrency and consistency
+Start the server first:
 
-The server creates one thread for each connected client. Binary records are
-protected with `fcntl` OFD record locks, so operations on different customer
-records can run concurrently while operations on the same record wait. A
-transfer locks both account records in file-offset order to prevent deadlocks.
-Related file updates use `fsync`, and multi-record operations perform a local
-best-effort rollback when an error is detected.
+```bash
+./server
+```
 
-## Account closing
+Open another terminal in the same folder and start a client:
 
-Employees select option 11 to permanently close a customer account and confirm
-with `CLOSE`. Closure requires a zero balance and no pending or in-review loans.
-It preserves records and passbook history, blocks banking operations and login,
-and cannot be reversed by manager activation. Manager deactivation remains
-temporary. A new customer/account can be created with a different username.
+```bash
+./client
+```
 
+Additional clients can be started in separate terminals using the same command.
+The server listens on `127.0.0.1:5555`.
+
+The initial text files under `data/` are converted automatically into binary
+record files when the server starts for the first time.
