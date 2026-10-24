@@ -8,10 +8,14 @@ typedef struct {
     int32_t owner_id;
     int64_t balance;
     int32_t active;
-    int32_t reserved;
+    int32_t reserved; /* 1 means permanently closed; 0 means open. */
 } AccountRecord;
 
 int init_accounts(void);
+/* Closing requires zero balance and no pending/in-review loans.
+ * Returns 1, 0 (missing), -2 (balance), -3 (loans), -4 (closed), -1 (I/O). */
+int close_account(int user_id);
+int account_is_closed(int user_id);
 int get_account_balance(int user_id,
                         int *account_id,
                         long long *balance);

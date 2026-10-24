@@ -73,7 +73,7 @@ int add_employee(const char *username, const char *password, int *user_id) {
         *user_id = employee.user_id;
         result = 1;
     } else {
-        (void)ftruncate(fd, offset);
+        if (ftruncate(fd, offset) < 0) result = -1;
         (void)fsync(fd);
     }
     (void)unlock_region(fd, offset, sizeof(UserRecord));

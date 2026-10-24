@@ -3,6 +3,7 @@
 #include "common.h"
 #include "fileio.h"
 #include "transactions.h"
+#include "loans.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -13,7 +14,8 @@
 
 static int valid_record(const AccountRecord *r) {
     return r->account_id > 0 && r->owner_id > 0 && r->balance >= 0 &&
-           r->balance <= MAX_BALANCE && (r->active == 0 || r->active == 1);
+           r->balance <= MAX_BALANCE && (r->active == 0 || r->active == 1) &&
+           (r->reserved == 0 || (r->reserved == 1 && !r->active));
 }
 
 static int parse_legacy_account(char *line, AccountRecord *r) {
@@ -188,6 +190,8 @@ int set_account_status(int user_id, int active, int *account_id) {
             if (pread_all(fd, &record, sizeof(record), target) != 1 ||
                 !valid_record(&record) || record.owner_id != user_id) {
                 result = -1;
+            } else if (record.reserved == 1) {
+                result = -4;
             } else {
                 record.active = active;
                 *account_id = record.account_id;
@@ -346,6 +350,81 @@ int transfer_funds(int user_id, int dest_account_id, long long amount,
 storage_error:
     result = -1;
 done:
+    close(fd);
+    return result;
+}
+
+/* Loans are locked before accounts, as in loan approval. The structure lock
+ * prevents new applications while closure checks and updates the account. */
+int close_account(int user_id) {
+    if (user_id <= 0) return -1;
+    int structure = ofd_lock(LOANS_STRUCTURE_LOCK_FILE, F_WRLCK);
+    if (structure < 0) return -1;
+    int loans = open(LOANS_FILE, O_RDONLY | O_CLOEXEC);
+    int accounts = -1, result = -1;
+    if (loans < 0 || lock_region(loans, F_RDLCK, 0, 0) < 0) goto done;
+    for (off_t offset = 0;; offset += sizeof(LoanRecord)) {
+        LoanRecord loan;
+        int rc = pread_all(loans, &loan, sizeof(loan), offset);
+        if (!rc) break;
+        if (rc < 0 || loan.status < LOAN_PENDING || loan.status > LOAN_REJECTED)
+            goto done;
+        if (loan.customer_id == user_id &&
+            (loan.status == LOAN_PENDING || loan.status == LOAN_IN_REVIEW)) {
+            result = -3;
+            goto done;
+        }
+    }
+    accounts = open(ACCOUNTS_FILE, O_RDWR | O_CLOEXEC);
+    if (accounts < 0) goto done;
+    for (off_t offset = 0;; offset += sizeof(AccountRecord)) {
+        if (lock_region(accounts, F_WRLCK, offset, sizeof(AccountRecord)) < 0)
+            goto done;
+        AccountRecord record;
+        int rc = pread_all(accounts, &record, sizeof(record), offset);
+        if (rc == 0) { result = 0; goto done; }
+        if (rc < 0 || !valid_record(&record)) goto done;
+        if (record.owner_id == user_id) {
+            if (record.reserved) result = -4;
+            else if (record.balance != 0) result = -2;
+            else {
+                AccountRecord original = record;
+                record.active = 0;
+                record.reserved = 1;
+                if (pwrite_all(accounts, &record, sizeof(record), offset) == 0 &&
+                    fsync(accounts) == 0) result = 1;
+                else {
+                    (void)pwrite_all(accounts, &original, sizeof(original), offset);
+                    (void)fsync(accounts);
+                }
+            }
+            goto done;
+        }
+        if (unlock_region(accounts, offset, sizeof(AccountRecord)) < 0)
+            goto done;
+    }
+done:
+    if (accounts >= 0) close(accounts);
+    if (loans >= 0) close(loans);
+    ofd_unlock(structure);
+    return result;
+}
+
+int account_is_closed(int user_id) {
+    int fd = open(ACCOUNTS_FILE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    int result = -1;
+    for (off_t offset = 0;; offset += sizeof(AccountRecord)) {
+        if (lock_region(fd, F_RDLCK, offset, sizeof(AccountRecord)) < 0) break;
+        AccountRecord record;
+        int rc = pread_all(fd, &record, sizeof(record), offset);
+        if (rc == 1 && valid_record(&record) && record.owner_id == user_id) {
+            result = record.reserved == 1;
+            break;
+        }
+        if (unlock_region(fd, offset, sizeof(AccountRecord)) < 0 || rc != 1 ||
+            !valid_record(&record)) break;
+    }
     close(fd);
     return result;
 }

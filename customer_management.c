@@ -138,8 +138,8 @@ int add_customer(const char *username, const char *password,
         fsync(accounts_fd) < 0 ||
         pwrite_all(users_fd, &user, sizeof(user), user_offset) < 0 ||
         fsync(users_fd) < 0) {
-        (void)ftruncate(accounts_fd, account_offset);
-        (void)ftruncate(users_fd, user_offset);
+        if (ftruncate(accounts_fd, account_offset) < 0) result = -1;
+        if (ftruncate(users_fd, user_offset) < 0) result = -1;
         (void)fsync(accounts_fd);
         (void)fsync(users_fd);
         result = -1;

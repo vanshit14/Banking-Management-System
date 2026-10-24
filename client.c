@@ -89,7 +89,8 @@ static int read_input(const char *prompt, char *buffer, size_t capacity) {
 
     if (too_long) {
         const char msg[] = "Input too long. Try again.\n";
-        (void)write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+        if (write(STDOUT_FILENO, msg, sizeof(msg) - 1) < 0)
+            return -1;
         return -1;
     }
     return 1;
@@ -326,6 +327,7 @@ int main(void) {
             printf("8. Change Password\n");
             printf("9. Logout\n");
             printf("10. Exit\n");
+            printf("11. Close Customer Account (permanent)\n");
 
             int rc = read_input("Enter choice: ", input, sizeof(input));
             if (rc == 0)
@@ -459,6 +461,25 @@ int main(void) {
                     printf("Invalid loan id.\n");
                     continue;
                 }
+            } else if (strcmp(input, "11") == 0) {
+                char customer_id[32], confirmation[16];
+                rc = read_input("Customer ID: ", customer_id, sizeof(customer_id));
+                if (rc <= 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                if (customer_id[0] == '\0' ||
+                    strspn(customer_id, "0123456789") != strlen(customer_id)) {
+                    printf("Invalid customer id.\n");
+                    continue;
+                }
+                rc = read_input("Permanently close this account? Type CLOSE: ",
+                                confirmation, sizeof(confirmation));
+                if (rc <= 0 || strcmp(confirmation, "CLOSE") != 0) {
+                    if (rc == 0) running = 0;
+                    continue;
+                }
+                snprintf(command, sizeof(command), "CLOSE_ACCOUNT|%s", customer_id);
             } else if (strcmp(input, "8") == 0) {
                 rc = build_password_command(command, sizeof(command));
                 if (rc <= 0) {

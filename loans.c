@@ -2,6 +2,8 @@
 #include "loans.h"
 #include "common.h"
 #include "fileio.h"
+#include "accounts.h"
+#include "transactions.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -116,6 +118,10 @@ int apply_loan(int user_id, long long amount, int *loan_id) {
     }
 
     int max_id = 0, result = -1;
+    int account_id, active;
+    long long balance;
+    if (get_account_by_owner(user_id, &account_id, &balance, &active) != 1 ||
+        !active) goto done;
     off_t offset = 0;
     while (1) {
         if (lock_region(fd, F_RDLCK, offset, sizeof(LoanRecord)) < 0)
@@ -145,7 +151,7 @@ int apply_loan(int user_id, long long amount, int *loan_id) {
         *loan_id = loan.loan_id;
         result = 1;
     } else {
-        (void)ftruncate(fd, offset);
+        if (ftruncate(fd, offset) < 0) result = -1;
         (void)fsync(fd);
     }
     (void)unlock_region(fd, offset, sizeof(LoanRecord));
@@ -348,6 +354,66 @@ int start_loan_processing(int loan_id, int employee_id) {
     return result;
 }
 
+/* Caller holds the loan write lock. Keep the account locked until both
+ * records and the passbook entry have been written. Lock order: loan, account,
+ * transaction log, matching banking operations' account -> log order. */
+static int disburse_loan(int loan_fd, off_t loan_offset, LoanRecord *loan) {
+    int fd = open(ACCOUNTS_FILE, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    int result = -4;
+    for (off_t offset = 0;; offset += (off_t)sizeof(AccountRecord)) {
+        if (lock_region(fd, F_WRLCK, offset, sizeof(AccountRecord)) < 0) {
+            result = -1;
+            break;
+        }
+        AccountRecord original;
+        int rc = pread_all(fd, &original, sizeof(original), offset);
+        if (rc != 1) {
+            result = rc == 0 ? -4 : -1;
+            (void)unlock_region(fd, offset, sizeof(AccountRecord));
+            break;
+        }
+        if (original.owner_id != loan->customer_id) {
+            if (unlock_region(fd, offset, sizeof(AccountRecord)) < 0) {
+                result = -1;
+                break;
+            }
+            continue;
+        }
+        if (original.account_id <= 0 || original.active != 1 ||
+            original.balance < 0 || original.balance > MAX_LOAN_AMOUNT ||
+            loan->amount > MAX_LOAN_AMOUNT - original.balance) {
+            (void)unlock_region(fd, offset, sizeof(AccountRecord));
+            break;
+        }
+        AccountRecord credited = original;
+        LoanRecord approved = *loan;
+        credited.balance += loan->amount;
+        approved.status = LOAN_APPROVED;
+        result = -1;
+        if (pwrite_all(fd, &credited, sizeof(credited), offset) == 0 &&
+            fsync(fd) == 0 &&
+            pwrite_all(loan_fd, &approved, sizeof(approved), loan_offset) == 0 &&
+            fsync(loan_fd) == 0 &&
+            append_transaction(original.account_id, 0, "LOAN_CREDIT",
+                               loan->amount) == 1) {
+            *loan = approved;
+            result = 1;
+        } else {
+            /* Best-effort rollback on I/O failure while both locks are held. */
+            (void)pwrite_all(fd, &original, sizeof(original), offset);
+            (void)fsync(fd);
+            (void)pwrite_all(loan_fd, loan, sizeof(*loan), loan_offset);
+            (void)fsync(loan_fd);
+        }
+        (void)unlock_region(fd, offset, sizeof(AccountRecord));
+        break;
+    }
+    close(fd);
+    return result;
+}
+
 int process_loan(int loan_id, int employee_id, int approve) {
     if (loan_id <= 0 || employee_id <= 0 || (approve != 0 && approve != 1))
         return -1;
@@ -392,8 +458,10 @@ int process_loan(int loan_id, int employee_id, int approve) {
                 result = -2;
             } else if (loan.status != LOAN_IN_REVIEW) {
                 result = -3;
+            } else if (approve) {
+                result = disburse_loan(fd, target, &loan);
             } else {
-                loan.status = approve ? LOAN_APPROVED : LOAN_REJECTED;
+                loan.status = LOAN_REJECTED;
                 result = pwrite_all(fd, &loan, sizeof(loan), target) == 0 &&
                          fsync(fd) == 0 ? 1 : -1;
             }

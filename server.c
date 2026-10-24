@@ -98,6 +98,10 @@ static int require_customer(ClientSession *session) {
         reply(session->socket_fd, "ERR|CUSTOMER_ONLY");
         return 0;
     }
+    if (account_is_closed(session->user_id) != 0) {
+        reply(session->socket_fd, "ERR|ACCOUNT_CLOSED_OR_UNAVAILABLE");
+        return 0;
+    }
     return 1;
 }
 
@@ -245,6 +249,10 @@ static void *handle_client(void *arg) {
                 continue;
             }
 
+            if (role == ROLE_CUSTOMER && account_is_closed(user_id) != 0) {
+                reply(session->socket_fd, "ERR|ACCOUNT_CLOSED_OR_UNAVAILABLE");
+                continue;
+            }
             int reserved = reserve_session(user_id);
             if (reserved == -1) {
                 reply(session->socket_fd, "ERR|USER_ALREADY_LOGGED_IN");
@@ -401,6 +409,27 @@ static void *handle_client(void *arg) {
                 reply(session->socket_fd, "ERR|USERNAME_EXISTS");
             else
                 reply(session->socket_fd, "ERR|CUSTOMER_MODIFY_FAILED");
+        } else if (strcmp(command, "CLOSE_ACCOUNT") == 0) {
+            if (!require_employee(session))
+                continue;
+            char *id_text = strtok_r(NULL, "|", &save);
+            char *extra = strtok_r(NULL, "|", &save);
+            char *end = NULL;
+            errno = 0;
+            long id = id_text ? strtol(id_text, &end, 10) : 0;
+            if (!id_text || extra || errno || end == id_text || *end != '\0' ||
+                id <= 0 || id > 2147483647L) {
+                reply(session->socket_fd, "ERR|INVALID_CUSTOMER_ID");
+                continue;
+            }
+            int result = close_account((int)id);
+            const char *message = "ERR|ACCOUNT_CLOSE_FAILED";
+            if (result == 1) message = "OK|ACCOUNT_CLOSED";
+            else if (result == 0) message = "ERR|CUSTOMER_ACCOUNT_NOT_FOUND";
+            else if (result == -2) message = "ERR|ACCOUNT_BALANCE_MUST_BE_ZERO";
+            else if (result == -3) message = "ERR|ACCOUNT_HAS_PENDING_LOANS";
+            else if (result == -4) message = "ERR|ACCOUNT_ALREADY_CLOSED";
+            reply(session->socket_fd, message);
         } else if (strcmp(command, "CUSTOMER_HISTORY") == 0) {
             if (!require_employee(session))
                 continue;
@@ -527,6 +556,8 @@ static void *handle_client(void *arg) {
                 reply(session->socket_fd, "ERR|LOAN_NOT_ASSIGNED_TO_YOU");
             else if (result == -3)
                 reply(session->socket_fd, "ERR|LOAN_NOT_IN_REVIEW");
+            else if (result == -4)
+                reply(session->socket_fd, "ERR|LOAN_CREDIT_ACCOUNT_UNAVAILABLE_OR_BALANCE_LIMIT");
             else
                 reply(session->socket_fd, "ERR|LOAN_PROCESS_FAILED");
         } else if (strcmp(command, "ASSIGNED_LOANS") == 0) {
@@ -605,6 +636,8 @@ static void *handle_client(void *arg) {
                                             &account_id);
             if (result == 0) {
                 reply(session->socket_fd, "ERR|CUSTOMER_ACCOUNT_NOT_FOUND");
+            } else if (result == -4) {
+                reply(session->socket_fd, "ERR|ACCOUNT_PERMANENTLY_CLOSED");
             } else if (result < 0) {
                 reply(session->socket_fd, "ERR|ACCOUNT_STATUS_FAILED");
             } else {
@@ -748,9 +781,7 @@ static void *handle_client(void *arg) {
             if (!require_customer(session))
                 continue;
 
-            const char *text = NULL;
-            if (strncmp(buffer, "FEEDBACK|", 9) == 0)
-                text = buffer + 9;
+            const char *text = save;
 
             if (!text || text[0] == '\0' || strchr(text, '|') != NULL) {
                 reply(session->socket_fd, "ERR|INVALID_FEEDBACK");
@@ -839,7 +870,6 @@ int main(void) {
         perror("loan storage initialization");
         return EXIT_FAILURE;
     }
-
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("socket");
