@@ -99,3 +99,8 @@ The server listens on `127.0.0.1:5555`.
 
 The initial text files under `data/` are converted automatically into binary
 record files when the server starts for the first time.
+
+## Design
+
+See [CLASS_DIAGRAM.md](CLASS_DIAGRAM.md) for the UML-style representation of
+the project structures, modules, operations, and relationships.
